@@ -12,8 +12,9 @@ env:
   BUILD_NUMBER: ${{ github.run_number }}
   JF_URL: ${{ secrets.JF_URL }}
   JF_ACCESS_TOKEN: ${{ secrets.JF_ACCESS_TOKEN }}
-  NPM_REPO: demo-npm-virtual          # Must match your Artifactory virtual npm repo name exactly
-  DOCKER_REPO: demo-docker-local      # Artifactory local Docker repo to push the image to
+  JF_USER: ${{ secrets.JF_USER }}
+  NPM_REPO: demo-npm-virtual
+  DOCKER_REPO: demo-docker-local
   IMAGE_NAME: jfrog-vulnerable-demo
   EVIDENCE_KEY_ALIAS: demo-signing-key
 
@@ -29,21 +30,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0    # full git history required for secrets scanning
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '18'
 
       - name: Setup JFrog CLI
         uses: jfrog/setup-jfrog-cli@v4
         env:
           JF_URL: ${{ env.JF_URL }}
           JF_ACCESS_TOKEN: ${{ env.JF_ACCESS_TOKEN }}
+          JF_USER: ${{ env.JF_USER }}
 
       - name: Configure npm to resolve through Artifactory
-        # All npm traffic proxied via Artifactory so Curation policies fire
         run: |
           jf npmc \
             --repo-resolve ${{ env.NPM_REPO }} \
@@ -51,30 +52,29 @@ jobs:
 
       # -----------------------------------------------------------------------
       # CURATION
-      # Contacts the Artifactory Curation API and evaluates every direct +
-      # transitive dependency against configured Curation policies.
+      # Correct command: jf curation-audit (alias: jf ca)
+      # Contacts the Artifactory Curation API and checks every dependency
+      # against configured Curation policies.
       # Blocks: malicious packages, CVE severity thresholds, banned licenses.
+      # Requires: Curation enabled on your Artifactory instance + npm repo
+      #           configured with Curation in Administration > Curation.
       # -----------------------------------------------------------------------
       - name: "Curation - Enforce Package Intake Policies"
         run: |
-          jf audit \
-            --curation \
-            --format=table \
-            --fail=false
+          jf curation-audit \
+            --format=table
         continue-on-error: true
 
       - name: "Curation - Export results (JSON)"
         run: |
-          jf audit \
-            --curation \
-            --format=json \
-            --fail=false > curation-results.json 2>&1 || true
+          jf curation-audit \
+            --format=json > curation-results.json 2>&1 || true
 
       # -----------------------------------------------------------------------
       # XRAY AUDIT
       # Full Xray-powered CVE + license audit on the dependency tree.
-      # Hits the Xray API directly — returns vulnerability details, CVSS
-      # scores, and license compliance findings across all dependencies.
+      # Hits the Xray API and returns vulnerability details, CVSS scores,
+      # and license compliance findings across all dependencies.
       # -----------------------------------------------------------------------
       - name: "Xray Audit - CVE and License Analysis"
         run: |
@@ -93,12 +93,12 @@ jobs:
       # ADVANCED SECURITY - SECRETS DETECTION
       # Scans all files and full git history for hardcoded secrets.
       # Findings expected in: config/, scripts/, .env, src/index.js
+      # Requires: JFrog Advanced Security license.
       # -----------------------------------------------------------------------
       - name: "Advanced Security - Secrets Detection"
         run: |
           jf audit \
-            --secrets=true \
-            --sast=false \
+            --secrets \
             --format=table \
             --fail=false
         continue-on-error: true
@@ -108,12 +108,12 @@ jobs:
       # Static analysis for insecure code patterns in src/:
       # Prototype pollution, RCE via template injection, SSRF, ReDoS,
       # JWT algorithm confusion, path traversal, XSS.
+      # Requires: JFrog Advanced Security license.
       # -----------------------------------------------------------------------
       - name: "Advanced Security - SAST"
         run: |
           jf audit \
-            --sast=true \
-            --secrets=false \
+            --sast \
             --format=table \
             --fail=false
         continue-on-error: true
@@ -121,8 +121,8 @@ jobs:
       - name: "Advanced Security - Export combined results (JSON)"
         run: |
           jf audit \
-            --secrets=true \
-            --sast=true \
+            --secrets \
+            --sast \
             --format=json \
             --fail=false > advanced-security-results.json 2>&1 || true
 
@@ -160,16 +160,14 @@ jobs:
       # -----------------------------------------------------------------------
       # DOCKER BUILD + PUSH TO ARTIFACTORY
       # Builds the container image and pushes it to Artifactory.
-      # The image is tagged with the build number and commit SHA so it is
-      # traceable back to this exact pipeline run.
-      # Xray will automatically scan the image layers on push if an Xray
-      # watch is configured against the Docker repo.
+      # Using jf docker push captures the image in Build Info alongside
+      # the npm deps so Xray scans both in one build-scan call.
       # -----------------------------------------------------------------------
       - name: "Docker - Authenticate with Artifactory registry"
         run: |
           echo "${{ env.JF_ACCESS_TOKEN }}" | docker login \
             "${{ secrets.JF_REGISTRY }}" \
-            --username "${{ secrets.JF_USER }}" \
+            --username "${{ env.JF_USER }}" \
             --password-stdin
 
       - name: "Docker - Build image"
@@ -223,7 +221,6 @@ jobs:
       # EVIDENCE + ATTESTATION
       # Assembles all scan results into a signed SLSA-style predicate and
       # stores it in Artifactory as verifiable evidence on the build.
-      # Covers: Curation + Xray Audit + Advanced Security + Xray Build Scan.
       # -----------------------------------------------------------------------
       - name: "Attestation - Assemble evidence predicate"
         run: |
@@ -256,7 +253,7 @@ jobs:
             --key="${{ secrets.EVIDENCE_PRIVATE_KEY }}" \
             --key-alias="${{ env.EVIDENCE_KEY_ALIAS }}"
 
-      - name: "Attestation - Verify signature (round-trip check)"
+      - name: "Attestation - Verify signature"
         run: |
           jf evidence verify \
             --subject-build-name="${{ env.BUILD_NAME }}" \
@@ -283,16 +280,16 @@ jobs:
         run: |
           echo "# JFrog Security Demo - Pipeline Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Step | Product | What it covers |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|---------|----------------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Curation | JFrog Curation | Package intake policies — malicious pkgs, CVE threshold, license ban |" >> $GITHUB_STEP_SUMMARY
-          echo "| Xray Audit | JFrog Xray | CVE + license analysis on full dependency tree |" >> $GITHUB_STEP_SUMMARY
-          echo "| Secrets Detection | JFrog Advanced Security | Hardcoded secrets in config/, .env, scripts/ |" >> $GITHUB_STEP_SUMMARY
-          echo "| SAST | JFrog Advanced Security | Insecure code patterns in src/ |" >> $GITHUB_STEP_SUMMARY
-          echo "| Build Info | Artifactory | Immutable build record — deps, git context, env |" >> $GITHUB_STEP_SUMMARY
-          echo "| Docker Build + Push | Artifactory | Image pushed to \`${{ env.DOCKER_REPO }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Xray Build Scan | JFrog Xray | 15+ CVEs across npm deps + Docker image layers |" >> $GITHUB_STEP_SUMMARY
-          echo "| Attestation | JFrog Evidence | Signed provenance bundle stored in Artifactory |" >> $GITHUB_STEP_SUMMARY
+          echo "| Step | Command | Product | What it covers |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|---------|---------|----------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Curation | \`jf curation-audit\` | JFrog Curation | Package intake policies — malicious pkgs, CVE threshold, license ban |" >> $GITHUB_STEP_SUMMARY
+          echo "| Xray Audit | \`jf audit\` | JFrog Xray | CVE + license analysis on full dependency tree |" >> $GITHUB_STEP_SUMMARY
+          echo "| Secrets Detection | \`jf audit --secrets\` | JFrog Advanced Security | Hardcoded secrets in config/, .env, scripts/ |" >> $GITHUB_STEP_SUMMARY
+          echo "| SAST | \`jf audit --sast\` | JFrog Advanced Security | Insecure code patterns in src/ |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build Info | \`jf rt build-publish\` | Artifactory | Immutable build record — deps, git context, env |" >> $GITHUB_STEP_SUMMARY
+          echo "| Docker Build + Push | \`jf docker push\` | Artifactory | Image pushed to \`${{ env.DOCKER_REPO }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Xray Build Scan | \`jf build-scan\` | JFrog Xray | 15+ CVEs across npm deps + Docker image layers |" >> $GITHUB_STEP_SUMMARY
+          echo "| Attestation | \`jf evidence create\` | JFrog Evidence | Signed provenance bundle stored in Artifactory |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Build:** \`${{ env.BUILD_NAME }}#${{ env.BUILD_NUMBER }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**Image:** \`${{ secrets.JF_REGISTRY }}/${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME }}:${{ env.BUILD_NUMBER }}\`" >> $GITHUB_STEP_SUMMARY

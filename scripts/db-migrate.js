@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+P#!/usr/bin/env node
 // ⚠️  DEMO FILE — hardcoded secrets intentionally present for JFrog Secret Detection demo
 
 const mysql = require('mysql');
