@@ -246,8 +246,8 @@ jobs:
       - name: "Attestation - Create and sign evidence in Artifactory"
         run: |
           jf evd create \
-            --subject-build-name="${{ env.BUILD_NAME }}" \
-            --subject-build-number="${{ env.BUILD_NUMBER }}" \
+            --build-name="${{ env.BUILD_NAME }}" \
+            --build-number="${{ env.BUILD_NUMBER }}" \
             --predicate=evidence-predicate.json \
             --predicate-type=https://jfrog.com/evidence/supply-chain-demo/v1 \
             --key="${{ secrets.EVIDENCE_PRIVATE_KEY }}" \
@@ -256,8 +256,8 @@ jobs:
       - name: "Attestation - Verify signature"
         run: |
           jf evd verify \
-            --subject-build-name="${{ env.BUILD_NAME }}" \
-            --subject-build-number="${{ env.BUILD_NUMBER }}" \
+            --build-name="${{ env.BUILD_NAME }}" \
+            --build-number="${{ env.BUILD_NUMBER }}" \
             --key-alias="${{ env.EVIDENCE_KEY_ALIAS }}"
 
       # -----------------------------------------------------------------------
