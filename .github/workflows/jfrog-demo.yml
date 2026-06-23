@@ -22,6 +22,8 @@ jobs:
   security-pipeline:
     name: "JFrog Security Demo Pipeline"
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
 
       # -----------------------------------------------------------------------
@@ -39,6 +41,11 @@ jobs:
 
       - name: Setup JFrog CLI
         uses: jfrog/setup-jfrog-cli@v4
+        # Note: jfrog/setup-jfrog-cli@v4 still uses Node 20 internally.
+        # Add FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true to suppress the warning
+        # until JFrog releases a v5 with native Node 24 support.
+        with:
+          version: 2.105.0
         env:
           JF_URL: ${{ env.JF_URL }}
           JF_ACCESS_TOKEN: ${{ env.JF_ACCESS_TOKEN }}
@@ -52,13 +59,20 @@ jobs:
 
       # -----------------------------------------------------------------------
       # CURATION
-      # Correct command: jf curation-audit (alias: jf ca)
-      # Contacts the Artifactory Curation API and checks every dependency
-      # against configured Curation policies.
-      # Blocks: malicious packages, CVE severity thresholds, banned licenses.
-      # Requires: Curation enabled on your Artifactory instance + npm repo
-      #           configured with Curation in Administration > Curation.
+      # jf curation-audit reads package-lock.json to build the dependency tree,
+      # then checks each package against Curation policies in Artifactory.
+      # package-lock.json MUST exist before curation-audit runs.
+      # npm install --package-lock-only generates it without downloading
+      # node_modules - fast and safe for a pre-build gate.
+      #
+      # Requires in Artifactory:
+      #   - Curation enabled (Administration > Curation)
+      #   - Remote npm repo connected to Curation policies
+      #   - Virtual npm repo (demo-npm-virtual) set as resolver
       # -----------------------------------------------------------------------
+      - name: "Curation - Generate package-lock.json"
+        run: npm install --package-lock-only --ignore-scripts
+
       - name: "Curation - Enforce Package Intake Policies"
         run: |
           jf curation-audit \
@@ -68,13 +82,13 @@ jobs:
       - name: "Curation - Export results (JSON)"
         run: |
           jf curation-audit \
-            --format=json > curation-results.json 2>&1 || true
+            --format=json 2>/dev/null > curation-results.json || echo "{}" > curation-results.json
 
       # -----------------------------------------------------------------------
       # XRAY AUDIT
       # Full Xray-powered CVE + license audit on the dependency tree.
-      # Hits the Xray API and returns vulnerability details, CVSS scores,
-      # and license compliance findings across all dependencies.
+      # Hits the Xray API directly - returns vulnerability details, CVSS
+      # scores, and license compliance findings across all dependencies.
       # -----------------------------------------------------------------------
       - name: "Xray Audit - CVE and License Analysis"
         run: |
@@ -87,7 +101,7 @@ jobs:
         run: |
           jf audit \
             --format=json \
-            --fail=false > xray-audit-results.json 2>&1 || true
+            --fail=false 2>/dev/null > xray-audit-results.json || echo "{}" > xray-audit-results.json
 
       # -----------------------------------------------------------------------
       # ADVANCED SECURITY - SECRETS DETECTION
@@ -124,7 +138,7 @@ jobs:
             --secrets \
             --sast \
             --format=json \
-            --fail=false > advanced-security-results.json 2>&1 || true
+            --fail=false 2>/dev/null > advanced-security-results.json || echo "{}" > advanced-security-results.json
 
       # -----------------------------------------------------------------------
       # BUILD + PUBLISH BUILD INFO
@@ -160,8 +174,8 @@ jobs:
       # -----------------------------------------------------------------------
       # DOCKER BUILD + PUSH TO ARTIFACTORY
       # Builds the container image and pushes it to Artifactory.
-      # Using jf docker push captures the image in Build Info alongside
-      # the npm deps so Xray scans both in one build-scan call.
+      # jf docker push captures the image in Build Info alongside the npm
+      # deps so Xray scans both in one build-scan call.
       # -----------------------------------------------------------------------
       - name: "Docker - Authenticate with Artifactory registry"
         run: |
@@ -215,7 +229,7 @@ jobs:
             --fail=false \
             --format=json \
             "${{ env.BUILD_NAME }}" \
-            "${{ env.BUILD_NUMBER }}" > xray-build-results.json 2>&1 || true
+            "${{ env.BUILD_NUMBER }}" 2>/dev/null > xray-build-results.json || echo "{}" > xray-build-results.json
 
       # -----------------------------------------------------------------------
       # EVIDENCE + ATTESTATION
@@ -223,25 +237,50 @@ jobs:
       # stores it in Artifactory as verifiable evidence on the build.
       # -----------------------------------------------------------------------
       - name: "Attestation - Assemble evidence predicate"
+        env:
+          BUILD_NAME: ${{ env.BUILD_NAME }}
+          BUILD_NUMBER: ${{ env.BUILD_NUMBER }}
+          COMMIT_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+          IMAGE: ${{ secrets.JF_REGISTRY }}/${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME }}:${{ env.BUILD_NUMBER }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          cat > evidence-predicate.json << EOF
-          {
-            "predicateType": "https://jfrog.com/evidence/supply-chain-demo/v1",
-            "buildName": "${{ env.BUILD_NAME }}",
-            "buildNumber": "${{ env.BUILD_NUMBER }}",
-            "commitSha": "${{ github.sha }}",
-            "repository": "${{ github.repository }}",
-            "image": "${{ secrets.JF_REGISTRY }}/${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME }}:${{ env.BUILD_NUMBER }}",
-            "runUrl": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
-            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "scans": {
-              "curation":         $(cat curation-results.json          2>/dev/null || echo '{}'),
-              "xrayAudit":        $(cat xray-audit-results.json        2>/dev/null || echo '{}'),
-              "advancedSecurity": $(cat advanced-security-results.json 2>/dev/null || echo '{}'),
-              "xrayBuild":        $(cat xray-build-results.json        2>/dev/null || echo '{}')
-            }
+          # Use python3 to safely assemble valid JSON from scan result files.
+          # This avoids heredoc + shell substitution issues where log lines
+          # (timestamps, [Error], [Info]) corrupt the JSON output.
+          python3 << 'PYEOF'
+          import json, os
+          from datetime import datetime, timezone
+
+          def load_json(path):
+              try:
+                  with open(path) as f:
+                      return json.load(f)
+              except Exception:
+                  return {}
+
+          predicate = {
+              "predicateType": "https://jfrog.com/evidence/supply-chain-demo/v1",
+              "buildName":     os.environ["BUILD_NAME"],
+              "buildNumber":   os.environ["BUILD_NUMBER"],
+              "commitSha":     os.environ["COMMIT_SHA"],
+              "repository":    os.environ["REPOSITORY"],
+              "image":         os.environ["IMAGE"],
+              "runUrl":        os.environ["RUN_URL"],
+              "timestamp":     datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "scans": {
+                  "curation":         load_json("curation-results.json"),
+                  "xrayAudit":        load_json("xray-audit-results.json"),
+                  "advancedSecurity": load_json("advanced-security-results.json"),
+                  "xrayBuild":        load_json("xray-build-results.json"),
+              }
           }
-          EOF
+
+          with open("evidence-predicate.json", "w") as f:
+              json.dump(predicate, f, indent=2)
+
+          print("evidence-predicate.json assembled successfully")
+          PYEOF
 
       - name: "Attestation - Create and sign evidence in Artifactory"
         run: |
@@ -282,11 +321,11 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Step | Command | Product | What it covers |" >> $GITHUB_STEP_SUMMARY
           echo "|------|---------|---------|----------------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Curation | \`jf curation-audit\` | JFrog Curation | Package intake policies — malicious pkgs, CVE threshold, license ban |" >> $GITHUB_STEP_SUMMARY
+          echo "| Curation | \`jf curation-audit\` | JFrog Curation | Package intake policies - malicious pkgs, CVE threshold, license ban |" >> $GITHUB_STEP_SUMMARY
           echo "| Xray Audit | \`jf audit\` | JFrog Xray | CVE + license analysis on full dependency tree |" >> $GITHUB_STEP_SUMMARY
           echo "| Secrets Detection | \`jf audit --secrets\` | JFrog Advanced Security | Hardcoded secrets in config/, .env, scripts/ |" >> $GITHUB_STEP_SUMMARY
           echo "| SAST | \`jf audit --sast\` | JFrog Advanced Security | Insecure code patterns in src/ |" >> $GITHUB_STEP_SUMMARY
-          echo "| Build Info | \`jf rt build-publish\` | Artifactory | Immutable build record — deps, git context, env |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build Info | \`jf rt build-publish\` | Artifactory | Immutable build record - deps, git context, env |" >> $GITHUB_STEP_SUMMARY
           echo "| Docker Build + Push | \`jf docker push\` | Artifactory | Image pushed to \`${{ env.DOCKER_REPO }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Xray Build Scan | \`jf build-scan\` | JFrog Xray | 15+ CVEs across npm deps + Docker image layers |" >> $GITHUB_STEP_SUMMARY
           echo "| Attestation | \`jf evd create\` | JFrog Evidence | Signed provenance bundle stored in Artifactory |" >> $GITHUB_STEP_SUMMARY
