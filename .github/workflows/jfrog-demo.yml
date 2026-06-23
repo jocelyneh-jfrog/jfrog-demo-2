@@ -37,9 +37,11 @@ jobs:
         with:
           node-version: '18'
 
-      -  name: Check JFrog CLI version
-         run: jf --version
-         env:
+      - name: Setup JFrog CLI
+        uses: jfrog/setup-jfrog-cli@v4
+        with:
+           version: 2.105.0
+        env:
           JF_URL: ${{ env.JF_URL }}
           JF_ACCESS_TOKEN: ${{ env.JF_ACCESS_TOKEN }}
           JF_USER: ${{ env.JF_USER }}
