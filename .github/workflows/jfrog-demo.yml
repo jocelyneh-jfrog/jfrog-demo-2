@@ -35,12 +35,10 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '18'
+          node-version: '24'
 
       - name: Setup JFrog CLI
         uses: jfrog/setup-jfrog-cli@v4
-        with:
-           version: 2.105.0
         env:
           JF_URL: ${{ env.JF_URL }}
           JF_ACCESS_TOKEN: ${{ env.JF_ACCESS_TOKEN }}
@@ -247,7 +245,7 @@ jobs:
 
       - name: "Attestation - Create and sign evidence in Artifactory"
         run: |
-          jf evidence create \
+          jf evd create \
             --subject-build-name="${{ env.BUILD_NAME }}" \
             --subject-build-number="${{ env.BUILD_NUMBER }}" \
             --predicate=evidence-predicate.json \
@@ -257,7 +255,7 @@ jobs:
 
       - name: "Attestation - Verify signature"
         run: |
-          jf evidence verify \
+          jf evd verify \
             --subject-build-name="${{ env.BUILD_NAME }}" \
             --subject-build-number="${{ env.BUILD_NUMBER }}" \
             --key-alias="${{ env.EVIDENCE_KEY_ALIAS }}"
@@ -291,7 +289,7 @@ jobs:
           echo "| Build Info | \`jf rt build-publish\` | Artifactory | Immutable build record — deps, git context, env |" >> $GITHUB_STEP_SUMMARY
           echo "| Docker Build + Push | \`jf docker push\` | Artifactory | Image pushed to \`${{ env.DOCKER_REPO }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Xray Build Scan | \`jf build-scan\` | JFrog Xray | 15+ CVEs across npm deps + Docker image layers |" >> $GITHUB_STEP_SUMMARY
-          echo "| Attestation | \`jf evidence create\` | JFrog Evidence | Signed provenance bundle stored in Artifactory |" >> $GITHUB_STEP_SUMMARY
+          echo "| Attestation | \`jf evd create\` | JFrog Evidence | Signed provenance bundle stored in Artifactory |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Build:** \`${{ env.BUILD_NAME }}#${{ env.BUILD_NUMBER }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**Image:** \`${{ secrets.JF_REGISTRY }}/${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME }}:${{ env.BUILD_NUMBER }}\`" >> $GITHUB_STEP_SUMMARY
