@@ -53,9 +53,9 @@ jobs:
 
       - name: Configure npm to resolve through Artifactory
         run: |
-          jf npmc \
-            --repo-resolve ${{ env.NPM_REPO }} \
-            --server-id-resolve setup-jfrog-cli-server
+              jf npmc \
+                --repo-resolve ${{ env.NPM_REPO }}
+
 
       # -----------------------------------------------------------------------
       # CURATION
