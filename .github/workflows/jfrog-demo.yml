@@ -66,22 +66,6 @@ jobs:
             --fail=false > curation-results.json 2>&1 || true
 
       # -----------------------------------------------------------------------
-      # XRAY AUDIT
-      # -----------------------------------------------------------------------
-      - name: "Xray Audit - CVE and License Analysis"
-        run: |
-          jf audit \
-            --format=table \
-            --fail=false
-        continue-on-error: true
-
-      - name: "Xray Audit - Export results (JSON)"
-        run: |
-          jf audit \
-            --format=json \
-            --fail=false > xray-audit-results.json 2>&1 || true
-
-      # -----------------------------------------------------------------------
       # ADVANCED SECURITY - SECRETS DETECTION
       # -----------------------------------------------------------------------
       - name: "Advanced Security - Secrets Detection"
@@ -192,7 +176,6 @@ jobs:
             "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "scans": {
               "curation":         $(cat curation-results.json          2>/dev/null || echo '{}'),
-              "xrayAudit":        $(cat xray-audit-results.json        2>/dev/null || echo '{}'),
               "advancedSecurity": $(cat advanced-security-results.json 2>/dev/null || echo '{}')
             }
           }
@@ -225,7 +208,6 @@ jobs:
           name: all-scan-results
           path: |
             curation-results.json
-            xray-audit-results.json
             advanced-security-results.json
             evidence-predicate.json
 
@@ -237,7 +219,6 @@ jobs:
           echo "| Step | Product | What it covers |" >> $GITHUB_STEP_SUMMARY
           echo "|------|---------|----------------|" >> $GITHUB_STEP_SUMMARY
           echo "| Curation | JFrog Curation | Package intake policies — malicious pkgs, CVE threshold, license ban |" >> $GITHUB_STEP_SUMMARY
-          echo "| Xray Audit | JFrog Xray | CVE + license analysis on full dependency tree |" >> $GITHUB_STEP_SUMMARY
           echo "| Secrets Detection | JFrog Advanced Security | Hardcoded secrets in config/, .env, scripts/ |" >> $GITHUB_STEP_SUMMARY
           echo "| SAST | JFrog Advanced Security | Insecure code patterns in src/ |" >> $GITHUB_STEP_SUMMARY
           echo "| Build Info | Artifactory | Immutable build record — deps, git context, env |" >> $GITHUB_STEP_SUMMARY
