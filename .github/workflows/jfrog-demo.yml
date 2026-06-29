@@ -130,7 +130,7 @@ jobs:
       # -----------------------------------------------------------------------
       - name: "Docker - Authenticate with Artifactory registry"
         run: |
-          echo "${{ env.JF_ACCESS_TOKEN }}" | docker login \
+          echo "${{ secrets.JF_ACCESS_TOKEN }}" | docker login \
             "${{ secrets.JF_REGISTRY }}" \
             --username "${{ secrets.JF_USER }}" \
             --password-stdin
