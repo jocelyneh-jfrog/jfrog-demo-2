@@ -1,31 +1,200 @@
-name: "Frogbot Security Scan"
+name: JFrog Security Demo Pipeline
 
 on:
-  pull_request_target: 
-    types: [opened, synchronize]
   push:
-    branches:
-      - main
-  schedule:
-    - cron: "0 0 * * *"
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
 
 permissions:
-  pull-requests: write
-  contents: write
+  contents: read
+  id-token: write
   security-events: write
+  attestations: write
+
+env:
+  BUILD_NAME: jfrog-vulnerable-demo
+  BUILD_NUMBER: ${{ github.run_number }}
+  JF_URL: ${{ secrets.JF_URL }}
+  JF_ACCESS_TOKEN: ${{ secrets.JF_ACCESS_TOKEN }}
+  NPM_REPO: demo-npm
+  DOCKER_REPO: demo-docker-local
+  IMAGE_NAME: jfrog-vulnerable-demo
 
 jobs:
-  frogbot-scan:
+  security-pipeline:
+    name: "JFrog Security Demo Pipeline"
     runs-on: ubuntu-latest
-    environment: frogbot
-    strategy:
-      matrix:
-        branch: ["main"]
     steps:
-      - uses: jfrog/frogbot@v2
+
+      # -----------------------------------------------------------------------
+      # SETUP
+      # -----------------------------------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Setup JFrog CLI
+        uses: jfrog/setup-jfrog-cli@v4
         env:
           JF_URL: ${{ secrets.JF_URL }}
           JF_ACCESS_TOKEN: ${{ secrets.JF_ACCESS_TOKEN }}
-          JF_GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          JF_GIT_BASE_BRANCH: ${{ matrix.branch }}
+
+      - name: Verify JFrog CLI
+        run: jf -v && jf rt ping
+
+      # -----------------------------------------------------------------------
+      # INSTALL DEPENDENCIES
+      # -----------------------------------------------------------------------
+      - name: Install dependencies
+        run: |
+          jf npmc --global=true \
+            --repo-resolve "${{ env.NPM_REPO }}" \
+            --server-id-resolve setup-jfrog-cli-server
+          jf npm cache clean --force
+          rm -f package-lock.json
+          jf npm install \
+            --build-name="${{ env.BUILD_NAME }}" \
+            --build-number="${{ env.BUILD_NUMBER }}" \
+            --module=npm-app
+
+      # -----------------------------------------------------------------------
+      # PUBLISH BUILD INFO
+      # -----------------------------------------------------------------------
+      - name: Publish build info
+        env:
+          JFROG_CLI_COMMAND_SUMMARY_OUTPUT_DIR: ""
+        run: |
+          jf rt build-collect-env
+          jf rt build-add-git
+          jf rt build-publish
+
+      # -----------------------------------------------------------------------
+      # XRAY BUILD SCAN
+      # -----------------------------------------------------------------------
+      - name: Xray scan build
+        run: jf build-scan --vuln --fail=false
+        continue-on-error: true
+
+      # -----------------------------------------------------------------------
+      # XRAY AUDIT - SCA + CONTEXTUAL ANALYSIS
+      # Runs jf audit from project root so Contextual Analysis can trace
+      # reachable paths through your actual source code in src/
+      # -----------------------------------------------------------------------
+      - name: Xray audit with Contextual Analysis
+        run: |
+          jf audit \
+            --format=table \
+            --fail=false
+        continue-on-error: true
+
+      # -----------------------------------------------------------------------
+      # SECRETS DETECTION
+      # -----------------------------------------------------------------------
+      - name: Secrets scan
+        id: secrets-scan
+        continue-on-error: true
+        run: |
+          jf audit --secrets --format simple-json 2>/dev/null | \
+            jq '{secrets: [.secrets[]? | {severity, ruleId, file, startLine, endLine, finding}], scansStatus: .scansStatus}' \
+            > secrets-scan.json
+          jq -e 'has("secrets")' secrets-scan.json >/dev/null
+          echo "Secrets found: $(jq '.secrets | length' secrets-scan.json)"
+
+      # -----------------------------------------------------------------------
+      # CURATION AUDIT
+      # -----------------------------------------------------------------------
+      - name: Curation audit
+        id: curation-audit
+        continue-on-error: true
+        run: |
+          RAW=$(jf curation-audit --format json 2>/dev/null | sed -n '/^\[/,$ p')
+          [ -z "$RAW" ] && RAW='[]'
+          echo "{\"blocked_packages\": ${RAW}}" > curation-audit.json
+          jq -e '.blocked_packages | type == "array"' curation-audit.json >/dev/null
+          echo "Blocked packages: $(jq '.blocked_packages | length' curation-audit.json)"
+
+      # -----------------------------------------------------------------------
+      # DOCKER BUILD + PUSH
+      # -----------------------------------------------------------------------
+      - name: Build Docker image tag
+        id: docker-tag
+        run: |
+          JF_HOST="${JF_URL#https://}"
+          JF_HOST="${JF_HOST#http://}"
+          JF_HOST="${JF_HOST%/}"
+          echo "tag=${JF_HOST}/${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME }}:${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push Docker image
+        id: docker-push
+        run: |
+          jf docker build \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            --label "org.opencontainers.image.source=${{ github.repositoryUrl }}" \
+            --label "build.name=${{ env.BUILD_NAME }}" \
+            --label "build.number=${{ env.BUILD_NUMBER }}" \
+            -t ${{ steps.docker-tag.outputs.tag }} .
+          jf docker push ${{ steps.docker-tag.outputs.tag }} \
+            --build-name="${{ env.BUILD_NAME }}" \
+            --build-number="${{ env.BUILD_NUMBER }}" \
+            --module=docker-image
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' ${{ steps.docker-tag.outputs.tag }} | grep -oE 'sha256:[a-f0-9]+')
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          IMAGE_PATH="${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME }}/${GITHUB_SHA::7}/manifest.json"
+          echo "manifest_path=${IMAGE_PATH}" >> "$GITHUB_OUTPUT"
+
+      - name: Scan Docker image
+        run: jf docker scan ${{ steps.docker-tag.outputs.tag }} --vuln --fail=false
+        continue-on-error: true
+
+      # -----------------------------------------------------------------------
+      # EVIDENCE + ATTESTATION
+      # -----------------------------------------------------------------------
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: oci://${{ steps.docker-tag.outputs.tag }}
+          subject-digest: ${{ steps.docker-push.outputs.digest }}
+
+      - name: Upload secrets scan evidence
+        continue-on-error: true
+        if: steps.secrets-scan.outcome == 'success'
+        env:
+          JFROG_CLI_SIGNING_KEY: ${{ secrets.EVIDENCE_PRIVATE_KEY }}
+          JFROG_CLI_KEY_ALIAS: demo-signing-key
+        run: |
+          jf evd create \
+            --predicate secrets-scan.json \
+            --predicate-type "https://jfrog.com/evidence/secret-detection/v1" \
+            --subject-repo-path "${{ steps.docker-push.outputs.manifest_path }}"
+
+      - name: Upload curation audit evidence
+        continue-on-error: true
+        if: steps.curation-audit.outcome == 'success'
+        env:
+          JFROG_CLI_SIGNING_KEY: ${{ secrets.EVIDENCE_PRIVATE_KEY }}
+          JFROG_CLI_KEY_ALIAS: demo-signing-key
+        run: |
+          jf evd create \
+            --predicate curation-audit.json \
+            --predicate-type "https://jfrog.com/evidence/curation-audit/v1" \
+            --subject-repo-path "${{ steps.docker-push.outputs.manifest_path }}"
+
+      # -----------------------------------------------------------------------
+      # UPLOAD ARTIFACTS
+      # -----------------------------------------------------------------------
+      - name: Upload all scan results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: all-scan-results
+          path: |
+            secrets-scan.json
+            curation-audit.json
