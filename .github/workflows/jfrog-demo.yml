@@ -77,13 +77,6 @@ jobs:
           jf rt build-publish
 
       # -----------------------------------------------------------------------
-      # XRAY BUILD SCAN
-      # -----------------------------------------------------------------------
-      - name: Xray scan build
-        run: jf build-scan --vuln --fail=false
-        continue-on-error: true
-
-      # -----------------------------------------------------------------------
       # XRAY AUDIT - SCA + CONTEXTUAL ANALYSIS
       # Runs jf audit from project root so Contextual Analysis can trace
       # reachable paths through your actual source code in src/
@@ -91,7 +84,9 @@ jobs:
       - name: Xray audit with Contextual Analysis
         run: |
           jf audit \
+            --npm \
             --format=table \
+            --extended-table \
             --fail=false
         continue-on-error: true
 
