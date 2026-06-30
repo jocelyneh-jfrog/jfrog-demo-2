@@ -79,8 +79,6 @@ jobs:
 
       # -----------------------------------------------------------------------
       # XRAY AUDIT - SCA + CONTEXTUAL ANALYSIS
-      # Runs jf audit from project root so Contextual Analysis can trace
-      # reachable paths through your actual source code in src/
       # -----------------------------------------------------------------------
       - name: Xray audit with Contextual Analysis
         run: |
@@ -106,9 +104,6 @@ jobs:
 
       # -----------------------------------------------------------------------
       # CURATION AUDIT
-      # Explicit run to capture JSON for evidence — install step already
-      # triggers Curation automatically, so we suppress the summary here
-      # to avoid showing it twice in the GitHub Actions summary.
       # -----------------------------------------------------------------------
       - name: Curation audit
         id: curation-audit
@@ -150,6 +145,8 @@ jobs:
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
           IMAGE_PATH="${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME }}/${GITHUB_SHA::7}/manifest.json"
           echo "manifest_path=${IMAGE_PATH}" >> "$GITHUB_OUTPUT"
+          echo "Docker image digest: ${DIGEST}"
+          echo "Docker manifest path: ${IMAGE_PATH}"
 
       - name: Scan Docker image
         run: jf docker scan ${{ steps.docker-tag.outputs.tag }} --vuln --fail=false
