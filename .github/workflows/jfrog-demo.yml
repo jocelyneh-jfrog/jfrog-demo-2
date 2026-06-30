@@ -158,6 +158,9 @@ jobs:
       # -----------------------------------------------------------------------
       # EVIDENCE + ATTESTATION
       # -----------------------------------------------------------------------
+      - name: Wait for Artifactory to index manifest
+        run: sleep 30
+
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2
         with:
