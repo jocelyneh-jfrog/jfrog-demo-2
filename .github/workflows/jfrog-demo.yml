@@ -54,6 +54,7 @@ jobs:
       # INSTALL DEPENDENCIES
       # -----------------------------------------------------------------------
       - name: Install dependencies
+        continue-on-error: true
         run: |
           jf npmc --global=true \
             --repo-resolve "${{ env.NPM_REPO }}" \
