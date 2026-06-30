@@ -106,10 +106,15 @@ jobs:
 
       # -----------------------------------------------------------------------
       # CURATION AUDIT
+      # Explicit run to capture JSON for evidence — install step already
+      # triggers Curation automatically, so we suppress the summary here
+      # to avoid showing it twice in the GitHub Actions summary.
       # -----------------------------------------------------------------------
       - name: Curation audit
         id: curation-audit
         continue-on-error: true
+        env:
+          JFROG_CLI_COMMAND_SUMMARY_OUTPUT_DIR: ""
         run: |
           RAW=$(jf curation-audit --format json 2>/dev/null | sed -n '/^\[/,$ p')
           [ -z "$RAW" ] && RAW='[]'
