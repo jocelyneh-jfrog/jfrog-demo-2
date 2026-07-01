@@ -55,6 +55,8 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Install dependencies
         continue-on-error: true
+        env:
+          JFROG_CLI_COMMAND_SUMMARY_OUTPUT_DIR: ""
         run: |
           jf npmc --global=true \
             --repo-resolve "${{ env.NPM_REPO }}" \
