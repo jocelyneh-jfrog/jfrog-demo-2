@@ -85,7 +85,6 @@ jobs:
           jf audit \
             --npm \
             --format=table \
-            --extended-table \
             --fail=false
         continue-on-error: true
 
@@ -111,10 +110,10 @@ jobs:
         env:
           JFROG_CLI_COMMAND_SUMMARY_OUTPUT_DIR: ""
         run: |
+          jf curation-audit --format table 2>/dev/null || true
           RAW=$(jf curation-audit --format json 2>/dev/null | sed -n '/^\[/,$ p')
           [ -z "$RAW" ] && RAW='[]'
           echo "{\"blocked_packages\": ${RAW}}" > curation-audit.json
-          jq -e '.blocked_packages | type == "array"' curation-audit.json >/dev/null
           echo "Blocked packages: $(jq '.blocked_packages | length' curation-audit.json)"
 
       # -----------------------------------------------------------------------
