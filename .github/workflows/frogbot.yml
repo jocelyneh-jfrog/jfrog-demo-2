@@ -16,9 +16,20 @@ permissions:
   security-events: write
 
 jobs:
-  frogbot-scan:
+  scan-pull-request:
     runs-on: ubuntu-latest
-    environment: frogbot
+    if: github.event_name == 'pull_request_target'
+    steps:
+      - uses: jfrog/frogbot@v2
+        env:
+          JF_URL: ${{ secrets.JF_URL }}
+          JF_ACCESS_TOKEN: ${{ secrets.JF_ACCESS_TOKEN }}
+          JF_GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JF_GIT_BASE_BRANCH: ${{ github.base_ref }}
+
+  scan-repository:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     strategy:
       matrix:
         branch: ["main"]
@@ -29,3 +40,4 @@ jobs:
           JF_ACCESS_TOKEN: ${{ secrets.JF_ACCESS_TOKEN }}
           JF_GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           JF_GIT_BASE_BRANCH: ${{ matrix.branch }}
+          JF_PR_TITLE_TEMPLATE: "[🐸 Frogbot] Update {IMPACTED_PACKAGE} {FIX_VERSION}"
